@@ -53,7 +53,8 @@ RUN uv sync --frozen --no-dev
 # ---- Stage 2: runtime image --------------------------------------------------
 FROM ghcr.io/osgeo/gdal:ubuntu-small-3.9.0 AS runtime
 
-LABEL org.opencontainers.image.source="https://github.com/fulton-ring/hifld-next-datasets"
+# The publishing workflow supplies org.opencontainers.image.source so that
+# repository transfers also update the package's source link.
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \

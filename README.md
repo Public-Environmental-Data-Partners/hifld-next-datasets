@@ -95,7 +95,20 @@ The standard path is the deploy script in iac:
 
 It builds and pushes the user-code image, fetches Terraform outputs, and runs `helm upgrade --install` with both the chart values from this repo and the GCP overlay [`hifld-next-iac/scripts/dagster-gcp-values.yaml`](../hifld-next-iac/scripts/dagster-gcp-values.yaml).
 
-GitHub Actions publishes the reproducible user-code image as `ghcr.io/fulton-ring/hifld-next-datasets/dagster-user:<git-sha>`. The source repository is public, but verify the GHCR package itself is **public** and anonymously pullable before deploying it to GKE; repository and package visibility are separate. Workload Identity does not authenticate Kubernetes image pulls to GHCR. Only the reduced inventory columns used by the publisher are copied into the runtime image; review the inventory descriptions before publication because they remain public data in that image.
+GitHub Actions publishes the user-code image as `ghcr.io/<owner>/<repository>/dagster-user:<git-sha>` and tags successful public main builds as `latest`. The owner/repository path is lowercased and derived from the workflow's repository, not hardcoded. The workflow supplies the source-repository image label so the package links to its current repository. Pull requests only build; only the publishing job gets `packages: write`.
+
+### Finding the image and coordinating a PEDP transfer
+
+Open **Actions → Publish datasets image → a publish run → Summary** for the image reference and direct **Open container package** link. Images are GitHub **Packages**, not release attachments or workflow artifacts. The current package is [fulton-ring's datasets Dagster image](https://github.com/fulton-ring/hifld-next-datasets/pkgs/container/hifld-next-datasets%2Fdagster-user).
+
+Before using a PEDP-owned image, coordinate with a PEDP organization/package admin:
+
+1. Allow creation of public container packages and publishing by the transferred repository using its `GITHUB_TOKEN` with `packages: write`. No personal access token or GCP credential is needed for this publishing workflow.
+2. After the first push creates the package, open **Package settings → Change visibility → Public**. New GHCR packages default to private even when the source repository is public; the workflow deliberately does not change visibility. If the package already exists, ensure it is connected to this repository and the repository has Actions write access to it.
+3. Rerun the workflow. It verifies the SHA-tagged manifest using an empty Docker credential configuration before promoting `latest`. If anonymous access fails, the run fails with instructions in its summary; the pushed SHA image may already exist privately.
+4. After transferring to `Public-Environmental-Data-Partners`, the new image target will be `ghcr.io/public-environmental-data-partners/hifld-next-datasets/dagster-user:<git-sha>`. Only after the public-pull check passes should `hifld-next-iac/.github/workflows/deploy-dagster.yml` change its `DAGSTER_IMAGE` and `DATASETS_REPOSITORY` references. Keep the existing fulton-ring image available for rollback; GHCR packages stay with their owner rather than moving with the repository.
+
+Repository and package visibility are separate, and Workload Identity does not authenticate Kubernetes image pulls to GHCR. See GitHub's [container-registry documentation](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry) and [package access settings](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility). Only the reduced inventory columns used by the publisher are copied into the runtime image; review the inventory descriptions before publication because they remain public data in that image.
 
 The archived HIFLD Open inventory records the operator-confirmed public-domain status as `CC-PDM-1.0` and writes a collection-level `LICENSE.md` notice. Ordinary HIFLD Dagster publication applies this status by default; set `HIFLD_PORTOLAN_ARCHIVE_PUBLIC_DOMAIN=0` to opt out. It applies only to the archived `hifld` collection. Future uploads remain `license: "other"` unless rights are supplied; an explicit `license_href` takes precedence over the archive notice.
 

@@ -31,15 +31,19 @@ on:
 
 permissions:
   contents: read
-  packages: write
-
-env:
-  DAGSTER_IMAGE: ghcr.io/fulton-ring/hifld-next-datasets/dagster-user
 
 jobs:
   build-only:
     runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.image }}
     steps:
+      - name: Resolve image namespace from repository
+        id: image
+        run: |
+          set -euo pipefail
+          repository="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          echo "image=ghcr.io/${repository}/dagster-user" >> "$GITHUB_OUTPUT"
       - name: Checkout
         uses: actions/checkout@v4
       - name: Set up Docker Buildx
@@ -51,12 +55,19 @@ jobs:
           file: Dockerfile
           platforms: linux/amd64
           push: false
-          tags: ${{ env.DAGSTER_IMAGE }}:${{ github.sha }}
+          tags: ${{ steps.image.outputs.image }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
   publish:
     if: github.event_name != 'pull_request'
     needs: build-only
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      DAGSTER_IMAGE: ${{ needs.build-only.outputs.image }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -79,6 +90,18 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: ${{ env.DAGSTER_IMAGE }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: Verify image is anonymously pullable
+        id: public-pull
+        run: |
+          set -euo pipefail
+          anonymous_config="$(mktemp -d)"
+          if ! docker --config "$anonymous_config" manifest inspect "${DAGSTER_IMAGE}:${GITHUB_SHA}" >/dev/null; then
+            echo "::error::Image was pushed, but anonymous access failed. A package admin must make it public, or check registry availability. See the run summary."
+            exit 1
+          fi
 
       - name: Promote main image to latest
         if: github.ref == 'refs/heads/main'
@@ -87,3 +110,25 @@ jobs:
           docker buildx imagetools create \
             --tag "${DAGSTER_IMAGE}:latest" \
             "${DAGSTER_IMAGE}:${GITHUB_SHA}"
+
+      - name: Show package location and public-access requirements
+        id: package-summary
+        if: always()
+        run: |
+          set -euo pipefail
+          package_name="${GITHUB_REPOSITORY#*/}%2Fdagster-user"
+          package_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pkgs/container/${package_name}"
+          {
+            echo '## Datasets container image'
+            echo
+            echo "Image target: \`${DAGSTER_IMAGE}:${GITHUB_SHA}\`"
+            echo
+            echo "[Open container package](${package_url})"
+            echo
+            echo 'Package visibility is separate from repository visibility. Newly created GHCR packages default to private.'
+            echo 'A package admin must set Package settings → Change visibility → Public. This workflow does not change visibility.'
+            echo 'PEDP must allow public container packages and publishing with the repository GITHUB_TOKEN (packages: write).'
+            echo 'If the package already exists, connect this repository and grant its Actions workflow write access.'
+            echo 'After changing access, rerun the workflow. latest is promoted only after anonymous access succeeds.'
+            echo 'Do not switch IaC to a new image namespace until that check passes; existing GHCR packages do not move with a repository transfer.'
+          } >> "$GITHUB_STEP_SUMMARY"
