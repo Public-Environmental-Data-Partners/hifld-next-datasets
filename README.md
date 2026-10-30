@@ -89,6 +89,45 @@ you need path-derived Hive fields.
 
 ### Deploying to GKE (manual)
 
+#### Publisher storage and public URLs
+
+The destination bucket and the URL advertised in STAC serve different purposes:
+
+```bash
+HIFLD_PORTOLAN_ENABLED=1
+HIFLD_STAGING_BUCKET=hifld-next-staging-prod
+HIFLD_STAGING_PREFIX=hifld
+HIFLD_DATASETS_BUCKET=hifld-next-datasets-prod
+HIFLD_DATASETS_PREFIX=hifld
+HIFLD_PORTOLAN_STORAGE_SLUG=gcs-hifld-next-datasets-prod
+HIFLD_PORTOLAN_PUBLIC_ROOT=https://storage.googleapis.com/hifld-next-datasets-prod
+```
+
+`HIFLD_PORTOLAN_PUBLIC_ROOT` is the public **bucket root**, without the `hifld`
+object prefix. A custom domain may use
+`https://hifld.publicenvirodata.org/storage` instead. The publisher appends each
+URL-encoded object key to this root; it does not append the bucket name again.
+The underlying bucket, prefix, object keys and bytes remain storage settings.
+Roots must be absolute HTTP(S) URLs without credentials, whitespace, a query or a
+fragment. A trailing slash is normalized.
+
+The terminal Dagster asset reads this environment variable. If omitted for GCS,
+it derives `https://storage.googleapis.com/<published bucket>`; local publication
+uses the existing local default. Manifest-based requests may explicitly override
+the root using `public_root`, which takes precedence over the environment.
+
+Deploy the setting through the `dagster-env` ConfigMap and restart its consumers
+through the supported deployment workflow. Existing immutable catalog releases
+are not rewritten: publish a new metadata release to advertise different URLs.
+Coordinate a host change with reader configuration first. The webapp's catalog
+pointer/STAC trust boundary and MCP/feature-server storage registries must accept
+the new URLs. Changing the webapp registry alone does not change published hrefs.
+
+Collection slug/title, release-pointer mode and archive-rights handling are
+additional publisher controls. Dataset metadata and release inputs supply the
+per-dataset attribution, source dates, schema and version; they are not separate
+deployment URL settings. This publisher uses Python directly, not the Portolan CLI.
+
 The cluster, namespace `hifld-next-datasets`, the `dagster` ServiceAccount, the `dagster-db` Secret, and the `dagster-env` ConfigMap are all provisioned by Terraform in [`hifld-next-iac/environments/prod/dagster.tf`](../hifld-next-iac/environments/prod/dagster.tf). Make sure that's applied first.
 
 [`helm/values.yaml`](helm/values.yaml) is intentionally cluster-agnostic — it pins the chart's structural choices (image, daemon, run launcher, queued coordinator) but does not assume a cloud. Cloud-specific concerns (e.g. GCS compute log persistence, Workload Identity bindings) live in `hifld-next-iac` and are layered on at install time.

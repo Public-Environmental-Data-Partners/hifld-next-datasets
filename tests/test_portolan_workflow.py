@@ -17,7 +17,12 @@ from shapely import Point
 from dagster_hifld.assets.portolan import default_storage_slug, publish_portolan_catalog
 from dagster_hifld.assets.publish import _write_and_publish_shapefile_zip
 from dagster_hifld.partitions import PUBLISH_PARTITIONS
-from dagster_hifld.portolan.catalog import CatalogRecord, ColumnRecord
+from dagster_hifld.portolan.catalog import (
+    CatalogRecord,
+    ColumnRecord,
+    build_catalog_sqlite,
+    render_portolan_tree,
+)
 from dagster_hifld.portolan.release import ReleasePointer
 from dagster_hifld.portolan.validation import PortolanValidationError
 from dagster_hifld.portolan.workflow import (
@@ -60,6 +65,90 @@ def _pmtiles_archive(layer_id: str = "roads") -> bytes:
 
 
 class PortolanWorkflowTests(unittest.TestCase):
+    def test_asset_href_uses_custom_bucket_root_and_encodes_object_key(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            published = PublishedStorageResource(
+                local_dir=temporary, use_local=True, prefix="hifld"
+            )
+            request = PortolanPublishRequest(
+                "hifld",
+                "dataset",
+                "file",
+                "v1.0.0",
+                "",
+                "",
+                "",
+                public_root="https://cdn.example.test/storage/",
+            )
+            published.write(
+                "dataset", "file", "v1.0.0", "raw/données original.json", b"{}"
+            )
+            assets = _record_assets(published, request)
+            self.assertEqual(len(assets), 1)
+            self.assertEqual(
+                assets[0].href,
+                "https://cdn.example.test/storage/hifld/dataset/file/v1.0.0/"
+                "raw/donn%C3%A9es%20original.json",
+            )
+            self.assertEqual(
+                assets[0].object_key,
+                "hifld/dataset/file/v1.0.0/raw/données original.json",
+            )
+            record = CatalogRecord(
+                "hifld",
+                "dataset",
+                "file",
+                "v1.0.0",
+                "File",
+                "Data",
+                "non_spatial_source",
+                1,
+                assets,
+            )
+            tree = Path(temporary) / "catalog-tree"
+            render_portolan_tree(tree, (record,), public_root=request.public_root)
+            collection = json.loads(
+                (tree / "hifld/dataset/file/v1.0.0/collection.json").read_text()
+            )
+            self.assertEqual(
+                collection["assets"][assets[0].key]["href"], assets[0].href
+            )
+            database = tree / "catalog.sqlite"
+            build_catalog_sqlite(database, (record,))
+            with sqlite3.connect(database) as connection:
+                self.assertEqual(
+                    connection.execute("SELECT href FROM assets").fetchone()[0],
+                    assets[0].href,
+                )
+
+    def test_request_rejects_invalid_public_roots_before_publication(self):
+        for root in (
+            "/storage",
+            "gs://bucket",
+            "https://",
+            "https://example.test/?x=1",
+            "https://example.test/?",
+            "https://example.test/#fragment",
+            "https://example.test/#",
+            "https://user:password@example.test",
+            "https://example.test/unescaped path",
+            "https://example.test/\n",
+        ):
+            with (
+                self.subTest(root=root),
+                self.assertRaisesRegex(ValueError, "public_root"),
+            ):
+                PortolanPublishRequest(
+                    "hifld",
+                    "dataset",
+                    "file",
+                    "v1.0.0",
+                    "",
+                    "",
+                    "",
+                    public_root=root,
+                )
+
     def test_indexes_nested_raw_and_metadata_without_internal_objects(self):
         with tempfile.TemporaryDirectory() as temporary:
             published = PublishedStorageResource(local_dir=temporary, use_local=True, prefix="hifld")
