@@ -2,12 +2,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from dagster import JobDefinition
 
 from dagster_hifld.portolan.build_inventory_catalog import inventory_catalog_job
 from dagster_hifld.portolan.inventory import (
+    GenerationPinnedMetadataLoader,
     _to_crs84_bbox,
     build_catalog_from_inventories,
 )
@@ -49,6 +50,14 @@ class PortolanInventoryTests(unittest.TestCase):
     def test_builds_generation_pinned_metadata_only_record(self):
         source_objects = [
             _object("dataset/file/v1.0.0/geoparquet/data.parquet", "101"),
+            _object("dataset/file/v1.0.0/raw/a/data.json", "107"),
+            _object("dataset/file/v1.0.0/raw/b/data.json", "108"),
+            _object("dataset/file/v1.0.0/shapefile/archive.zip", "114"),
+            _object("dataset/file/v1.0.0/metadata/custom/notes.json", "109"),
+            _object("dataset/file/v1.0.0/unknown/source.shp", "110"),
+            _object("dataset/file/v1.0.0/_temporary/secret.json", "111"),
+            _object("dataset/file/v1.0.0/metadata/_control/secret.json", "112"),
+            _object("dataset/file/v1.0.0/catalog.json", "113"),
             _object("dataset/metadata/source_manifest.json", "102"),
             _object("dataset/file/metadata/source_manifest.json", "103"),
             _object("dataset/file/v1.0.0/metadata/source_manifest.json", "104"),
@@ -108,11 +117,15 @@ class PortolanInventoryTests(unittest.TestCase):
             source_path.write_text(json.dumps(source_objects))
             target_path.write_text(json.dumps(target_objects))
             footer_path.write_text(json.dumps(footer))
+            loader = Mock(
+                spec=GenerationPinnedMetadataLoader,
+                side_effect=lambda item: metadata[item.name],
+            )
             result = build_catalog_from_inventories(
                 source_path,
                 target_path,
                 footer_path,
-                source_metadata=lambda item: metadata[item.name],
+                source_metadata=loader,
                 published_root="https://storage.googleapis.com/hifld-next-portolan-published",
                 collection_created_at="2026-02-13T02:52:43.921817",
                 collection_updated_at="2026-02-13T02:52:43.921841",
@@ -125,6 +138,9 @@ class PortolanInventoryTests(unittest.TestCase):
             )
 
         self.assertEqual(result.report.version_count, 1)
+        self.assertEqual(
+            {item.name for item in loader.prefetch.call_args.args[0]}, set(metadata)
+        )
         record = result.records[0]
         self.assertEqual(record.collection_title, "HIFLD")
         self.assertEqual(record.title, "Version title")
@@ -138,6 +154,24 @@ class PortolanInventoryTests(unittest.TestCase):
             (-8575600.0, 4707060.0, -8575500.0, 4707160.0),
         )
         self.assertEqual(record.assets[0].storage_revision, "copy-101")
+        self.assertEqual(
+            {asset.relative_path for asset in record.assets},
+            {
+                "geoparquet/data.parquet",
+                "raw/a/data.json",
+                "raw/b/data.json",
+                "shapefile/archive.zip",
+                "metadata/custom/notes.json",
+                "metadata/source_manifest.json",
+                "metadata/data_dictionary.json",
+                "metadata/quality_manifest.json",
+            },
+        )
+        self.assertEqual(len({asset.key for asset in record.assets}), 8)
+        self.assertEqual(
+            next(asset.media_type for asset in record.assets if asset.relative_path == "raw/a/data.json"),
+            "application/json",
+        )
         self.assertEqual(
             record.assets[0].href,
             "https://storage.googleapis.com/hifld-next-portolan-published/hifld/dataset/file/v1.0.0/geoparquet/data.parquet",

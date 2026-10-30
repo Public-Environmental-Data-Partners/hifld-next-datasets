@@ -5,7 +5,11 @@ import os
 
 from dagster import AssetKey, Output, asset
 
-from dagster_hifld.partitions import PUBLISH_PARTITIONS, parse_publish_partition_key
+from dagster_hifld.partitions import (
+    PUBLISH_PARTITIONS,
+    default_publish_collection,
+    resolve_publish_partition,
+)
 from dagster_hifld.resources import PublishedStorageResource, StagingStorageResource
 
 
@@ -29,7 +33,10 @@ def publish_portolan_catalog(
         publish_portolan_record,
     )
 
-    dataset_slug, file_slug, version = parse_publish_partition_key(context.partition_key)
+    identity, staging_storage, published_storage = resolve_publish_partition(
+        context.partition_key, staging_storage, published_storage
+    )
+    dataset_slug, file_slug, version = identity.dataset_slug, identity.file_slug, identity.version
     public_root = os.environ.get("HIFLD_PORTOLAN_PUBLIC_ROOT")
     if not public_root and published_storage.bucket and published_storage.backend == "gcs":
         public_root = f"https://storage.googleapis.com/{published_storage.bucket}"
@@ -39,7 +46,7 @@ def publish_portolan_catalog(
         published_storage.backend, published_storage.bucket
     )
     request = PortolanPublishRequest(
-        collection_slug=os.environ.get("HIFLD_PORTOLAN_COLLECTION", "hifld"),
+        collection_slug=identity.collection,
         dataset_slug=dataset_slug,
         file_slug=file_slug,
         version=version,
@@ -48,9 +55,14 @@ def publish_portolan_catalog(
         provider="",
         public_root=public_root.rstrip("/"),
         storage_slug=storage_slug,
-        collection_title=os.environ.get("HIFLD_PORTOLAN_COLLECTION_TITLE"),
+        collection_title=(
+            os.environ.get("HIFLD_PORTOLAN_COLLECTION_TITLE")
+            if identity.collection == default_publish_collection()
+            else None
+        ),
         archive_public_domain=(
-            os.environ.get("HIFLD_PORTOLAN_ARCHIVE_PUBLIC_DOMAIN", "1") != "0"
+            identity.collection == "hifld"
+            and os.environ.get("HIFLD_PORTOLAN_ARCHIVE_PUBLIC_DOMAIN", "1") != "0"
         ),
     )
     generation = publish_portolan_record(

@@ -86,6 +86,45 @@ class AssetRecord:
     storage_revision: str | None = None
     object_key: str | None = None
     pmtiles_layers: tuple[str, ...] = ()
+    relative_path: str | None = None
+
+
+def is_publication_path(value: str) -> bool:
+    """Return whether an object path is safe for public catalog publication."""
+    private = {
+        "temporary", "transient", "rollback", "scratch", "control", "approval", "approvals",
+        "secret", "secrets", "credentials", "token",
+    }
+    if not value or value.startswith("/") or any(char in value for char in "\\?#%:\x00"):
+        return False
+    parts = value.split("/")
+    if parts[0].lower() == "unknown":
+        return False
+    for part in parts:
+        tokens = part.lower().replace("-", "_").replace(".", "_").split("_")
+        if (
+            not part
+            or part in {".", ".."}
+            or part.startswith((".", "_"))
+            or private.intersection(tokens)
+            or Path(part).suffix.lower() in {".pem", ".key"}
+            or any(ord(char) < 32 for char in part)
+        ):
+            return False
+    return True
+
+
+def asset_relative_path(record: CatalogRecord, asset: AssetRecord) -> str:
+    """Return the full path below a version for STAC and SQLite projections."""
+    if asset.relative_path is not None:
+        relative = asset.relative_path
+    else:
+        key = asset.object_key or urlparse(asset.href).path
+        version = f"{record.dataset_slug}/{record.file_slug}/{record.version_label}/"
+        relative = key.split(version, 1)[1] if version in key else key.rsplit("/", 1)[-1]
+    if not is_publication_path(relative):
+        raise ValueError(f"Unsafe public asset relative path: {relative}")
+    return relative
 
 
 @dataclass(frozen=True)
@@ -493,7 +532,7 @@ def _insert_record(connection: sqlite3.Connection, record: CatalogRecord) -> Non
                 asset_path,
                 location_path,
                 object_key,
-                object_key.rsplit("/", 1)[-1],
+                asset_relative_path(record, asset),
                 asset.size_bytes,
                 asset.sha256,
                 asset.checksum_multihash,
@@ -938,6 +977,7 @@ def _render_record(root: Path, record: CatalogRecord) -> None:
             "title": asset.title,
             "roles": list(asset.roles),
             "file:size": asset.size_bytes,
+            "hifld:relative_path": asset_relative_path(record, asset),
             **(
                 {"file:checksum": asset.checksum_multihash}
                 if asset.checksum_multihash is not None
