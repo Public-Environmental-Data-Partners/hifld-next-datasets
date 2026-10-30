@@ -11,6 +11,7 @@ from dagster_hifld.portolan.catalog import (
     CatalogRecord,
     ColumnRecord,
     build_catalog_sqlite,
+    is_publication_path,
     render_portolan_tree,
     update_catalog_sqlite,
 )
@@ -18,6 +19,47 @@ from dagster_hifld.portolan.validation import normalize_candidate_tree, validate
 
 
 class PortolanCatalogTests(unittest.TestCase):
+    def test_publication_path_rejects_traversal_private_and_legacy_unknown_namespace(self):
+        for path in (
+            "../secret.json", "raw/../secret.json", "metadata/control/token.json",
+            "unknown/source.shp",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(is_publication_path(path))
+        self.assertTrue(is_publication_path("raw/unknown/source.json"))
+        self.assertTrue(is_publication_path("shapefile/archive.zip"))
+
+    def test_sqlite_preserves_full_version_relative_asset_paths(self):
+        assets = tuple(
+            AssetRecord(
+                path.replace("/", "-"), "raw", "data.json",
+                "https://example.test/hifld/dataset/file/v1/" + path,
+                "application/json", 2, "a" * 64,
+                object_key="hifld/dataset/file/v1/" + path,
+                relative_path=path,
+            )
+            for path in ("raw/a/data.json", "raw/b/data.json")
+        )
+        record = CatalogRecord("hifld", "dataset", "file", "v1", "Title", "Description", "non_spatial_source", 0, assets)
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "catalog.sqlite"
+            build_catalog_sqlite(database, (record,))
+            with sqlite3.connect(database) as connection:
+                paths = connection.execute(
+                    "SELECT relative_path FROM asset_objects ORDER BY relative_path"
+                ).fetchall()
+
+        self.assertEqual(paths, [("raw/a/data.json",), ("raw/b/data.json",)])
+        stac_root = Path(temporary) / "stac"
+        render_portolan_tree(stac_root, (record,))
+        collection = json.loads(
+            (stac_root / "hifld/dataset/file/v1/collection.json").read_text()
+        )
+        self.assertEqual(
+            {asset["hifld:relative_path"] for asset in collection["assets"].values()},
+            {"raw/a/data.json", "raw/b/data.json"},
+        )
+
     def test_rendered_collection_uses_world_extent_when_derived_bbox_is_invalid(self):
         record = CatalogRecord(
             "hifld",

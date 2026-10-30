@@ -60,6 +60,52 @@ def _pmtiles_archive(layer_id: str = "roads") -> bytes:
 
 
 class PortolanWorkflowTests(unittest.TestCase):
+    def test_indexes_nested_raw_and_metadata_without_internal_objects(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            published = PublishedStorageResource(local_dir=temporary, use_local=True, prefix="hifld")
+            request = PortolanPublishRequest("hifld", "dataset", "file", "v1.0.0", "", "", "https://example.test")
+            expected = {
+                "raw/a/data.json", "raw/b/data.json", "metadata/source_manifest.json",
+                "metadata/source/readme.txt", "shapefile/archive.zip",
+            }
+            excluded = {
+                "_temporary/raw.json", "raw/.env", "rollback/secret.json",
+                "metadata/approval.json", "metadata/_control/secret.json",
+                "raw/question?.json", "raw/%2e%2e/secret.json",
+                "metadata/credentials/private.json", "metadata/release_approval.json",
+                "metadata/transient/snapshot.json",
+                "unknown/source.shp",
+            }
+            for relative in expected | excluded:
+                published.write("dataset", "file", "v1.0.0", relative, b"{}")
+
+            assets = _record_assets(published, request)
+
+            self.assertEqual({asset.relative_path for asset in assets}, expected)
+            self.assertEqual(len({asset.key for asset in assets}), len(expected))
+            for asset in assets:
+                self.assertEqual(asset.object_key, "hifld/dataset/file/v1.0.0/" + asset.relative_path)
+                self.assertEqual(asset.roles, ("metadata", "source") if asset.relative_path.startswith("metadata/") else ("data",))
+            self.assertEqual(next(asset.media_type for asset in assets if asset.relative_path.endswith("readme.txt")), "text/plain")
+
+    def test_catalog_only_promotes_generic_nested_assets_but_not_generated_assets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            staging = StagingStorageResource(local_dir=str(root / "staging"), use_local=True, prefix="hifld")
+            published = PublishedStorageResource(local_dir=str(root / "published"), use_local=True, prefix="hifld")
+            request = PortolanPublishRequest("hifld", "dataset", "file", "v1.1.0", "", "", "")
+            expected = {"raw/a/data.json", "shapefile/archive.zip"}
+            staging.write("dataset", "file", "v1.1.0", "metadata/custom/notes.txt", b"source")
+            staging.write("dataset", "file", "v1.1.0", "unknown/source.shp", b"legacy sidecar")
+            for relative in expected:
+                staging.write("dataset", "file", "v1.1.0", relative, b"source")
+            staging.write("dataset", "file", "v1.1.0", "styles/custom.json", b"{}")
+            staging.write("dataset", "file", "v1.1.0", "thumbnail/preview.png", b"preview")
+
+            _promote_staged_data(staging, published, request)
+
+            self.assertEqual({key.removeprefix("hifld/dataset/file/v1.1.0/") for key in published.list_prefix("dataset/file/v1.1.0")}, expected)
+
     @staticmethod
     def _schema_facts(*columns: ColumnRecord) -> GeoParquetFacts:
         return GeoParquetFacts(
