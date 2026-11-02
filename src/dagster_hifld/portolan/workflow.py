@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
+from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 import pyarrow.dataset as pa_dataset
@@ -167,6 +168,25 @@ class PortolanPublishRequest:
     storage_slug: str = "seaweedfs-local-published"
     collection_title: str | None = None
     archive_public_domain: bool = False
+
+    def __post_init__(self) -> None:
+        root = urlsplit(self.public_root)
+        if (
+            root.scheme not in {"http", "https"}
+            or not root.hostname
+            or root.username is not None
+            or root.password is not None
+            or "?" in self.public_root
+            or "#" in self.public_root
+            or any(
+                character.isspace() or ord(character) < 32
+                for character in self.public_root
+            )
+        ):
+            raise ValueError(
+                "public_root must be an absolute HTTP(S) bucket-root URL without credentials, query, or fragment."
+            )
+        object.__setattr__(self, "public_root", self.public_root.rstrip("/"))
 
     @property
     def resolved_license(self) -> tuple[str, str | None]:
@@ -486,7 +506,7 @@ def _record_assets(
                 key=asset_key,
                 format_key=format_key,
                 title=Path(key).name,
-                href=f"{request.public_root}/{key}",
+                href=f"{request.public_root}/{quote(key, safe='/')}",
                 media_type=(
                     _STYLE_MEDIA_TYPE
                     if format_key == "styles"
