@@ -1005,6 +1005,17 @@ def _source_publisher_from_storage(
     return None
 
 
+def _sync_catalog_root_metadata(database: Path, root: Path, root_href: str) -> None:
+    """Project the merged catalog identity and current bundle URL into SQLite."""
+    document = json.loads((root / "catalog.json").read_bytes())
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE catalog_metadata SET root_title = ?, root_href = ? "
+            "WHERE singleton = 1",
+            (document.get("title") or document["id"], root_href),
+        )
+
+
 def _sync_corrected_spatial_extents(database: Path, root: Path) -> None:
     """Keep the disposable SQLite projection aligned with corrected STAC boxes."""
     with sqlite3.connect(database) as connection:
@@ -1077,6 +1088,7 @@ def _publish_catalog(
         else:
             database.write_bytes(published.read_key(CATALOG_KEY))
             generation = update_catalog_sqlite(database, records)
+        _sync_catalog_root_metadata(database, root, root_href)
         _sync_corrected_spatial_extents(database, root)
         for path in sorted(root.rglob("*")):
             if path.is_file() and path != database:
@@ -1165,6 +1177,7 @@ def _publish_release_catalog(
                 published, version_path
             ),
         )
+        _sync_catalog_root_metadata(database, root, root_href)
         _sync_corrected_spatial_extents(database, root)
         validate_candidate_tree(root)
         for path in sorted(root.rglob("*")):
@@ -1348,6 +1361,10 @@ def _merge_and_rebase_release_documents(
             )
         if path.name == "catalog.json" and previous is not None:
             value = _merge_catalog_children(previous, value)
+            if relative_path == "catalog.json" and isinstance(previous, dict):
+                for key in ("id", "title", "description"):
+                    if key in previous:
+                        value[key] = previous[key]
         _rebase_navigation_links(
             value, public_root, release_root, all_links=previous_release
         )

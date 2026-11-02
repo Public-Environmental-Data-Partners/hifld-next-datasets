@@ -585,6 +585,103 @@ class PortolanWorkflowTests(unittest.TestCase):
             )
             self.assertEqual(root_links, {"root": expected_root, "self": expected_root})
 
+    def test_adding_collection_preserves_root_identity_and_sqlite_metadata(self):
+        for use_release_pointer in (False, True):
+            with (
+                self.subTest(use_release_pointer=use_release_pointer),
+                tempfile.TemporaryDirectory() as tmpdir,
+            ):
+                published = PublishedStorageResource(
+                    local_dir=tmpdir, use_local=True
+                )
+                request = PortolanPublishRequest(
+                    "hifld",
+                    "dataset",
+                    "file",
+                    "v1.0.0",
+                    "File",
+                    "Description",
+                    "Agency",
+                    public_root="https://example.test/catalog",
+                )
+                first = CatalogRecord(
+                    "hifld",
+                    "dataset",
+                    "file",
+                    "v1.0.0",
+                    "File",
+                    "Description",
+                    "non_spatial_source",
+                    0,
+                    (),
+                    collection_title="HIFLD",
+                    collection_description="Canonical catalog description",
+                )
+                first_generation = _publish_catalog(
+                    (first,),
+                    request,
+                    published,
+                    use_release_pointer=use_release_pointer,
+                )
+                first_prefix = (
+                    f"releases/{first_generation}/" if use_release_pointer else ""
+                )
+                first_root_bytes = published.read_key(f"{first_prefix}catalog.json")
+                first_root = json.loads(first_root_bytes)
+                second = replace(
+                    first,
+                    collection_slug="openfema",
+                    collection_title="OpenFEMA",
+                    collection_description="OpenFEMA collection description",
+                )
+                generation = _publish_catalog(
+                    (second,),
+                    replace(request, collection_slug="openfema"),
+                    published,
+                    use_release_pointer=use_release_pointer,
+                )
+                prefix = f"releases/{generation}/" if use_release_pointer else ""
+                root = json.loads(published.read_key(f"{prefix}catalog.json"))
+                for key in ("id", "title", "description"):
+                    self.assertEqual(root[key], first_root[key])
+                release_root = f"{request.public_root}/{prefix}".rstrip("/")
+                self.assertEqual(
+                    {
+                        link["href"]
+                        for link in root["links"]
+                        if link["rel"] == "child"
+                    },
+                    {
+                        f"{release_root}/hifld/catalog.json",
+                        f"{release_root}/openfema/catalog.json",
+                    },
+                )
+                collection = json.loads(
+                    published.read_key(f"{prefix}openfema/catalog.json")
+                )
+                self.assertEqual(collection["title"], "OpenFEMA")
+                self.assertEqual(
+                    collection["description"], second.collection_description
+                )
+                with sqlite3.connect(
+                    Path(tmpdir) / prefix / "_catalog/catalog.sqlite"
+                ) as conn:
+                    self.assertEqual(
+                        conn.execute(
+                            "SELECT root_title, root_href FROM catalog_metadata"
+                        ).fetchone(),
+                        (first_root["title"], f"{release_root}/catalog.json"),
+                    )
+                    self.assertEqual(
+                        conn.execute("SELECT COUNT(*) FROM versions").fetchone()[0],
+                        2,
+                    )
+                if use_release_pointer:
+                    self.assertEqual(
+                        published.read_key(f"{first_prefix}catalog.json"),
+                        first_root_bytes,
+                    )
+
     def test_release_rollback_conditionally_restores_a_complete_prior_generation(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             published = PublishedStorageResource(local_dir=tmpdir, use_local=True)
